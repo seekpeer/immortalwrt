@@ -53,8 +53,17 @@ jobs:
 
       - name: Load custom feeds
         run: |
-          [ -e $FEEDS_CONF ] && cp $FEEDS_CONF openwrt/feeds.conf.default
-          [ -e $DIY_P1_SH ] && chmod +x $DIY_P1_SH && ./$DIY_P1_SH
+          # 使用 if 语句，即使文件缺失也不会报错退出
+          if [ -f "$FEEDS_CONF" ]; then
+            cp "$FEEDS_CONF" openwrt/feeds.conf.default
+            echo "成功加载自定义 feeds 配置。"
+          fi
+          
+          if [ -f "$DIY_P1_SH" ]; then
+            chmod +x "$DIY_P1_SH"
+            ./"$DIY_P1_SH"
+            echo "成功执行 DIY-Part1 脚本。"
+          fi
 
       - name: Update & Install feeds
         run: |
@@ -64,25 +73,29 @@ jobs:
 
       - name: Load custom configuration
         run: |
-          # 1. 检查文件夹和文件是否存在
+          # 检查配置文件路径
           if [ ! -f "$CONFIG_FILE" ]; then
-            echo "ERROR: File $CONFIG_FILE not found."
-            echo "Checking current directory structure..."
+            echo "错误: 找不到配置文件 $CONFIG_FILE"
+            echo "当前目录结构如下："
             ls -R
             exit 1
           fi
           
-          # 2. 覆盖配置并强制扩容
-          cp $CONFIG_FILE openwrt/.config
+          cp "$CONFIG_FILE" openwrt/.config
+          
+          # 强制增加分区大小，彻底解决之前的 "out of space" 报错
           echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> openwrt/.config
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> openwrt/.config
           
           cd openwrt
-          # 3. 补全依赖
           make defconfig
-          echo "--- Check if Target is correct ---"
+          echo "--- 检查编译目标是否正确 ---"
           grep "CONFIG_TARGET" .config | head -n 5
-          [ -e $DIY_P2_SH ] && chmod +x ../$DIY_P2_SH && ../$DIY_P2_SH
+          
+          if [ -f "../$DIY_P2_SH" ]; then
+            chmod +x "../$DIY_P2_SH"
+            "../$DIY_P2_SH"
+          fi
 
       - name: Download package
         id: package
@@ -97,6 +110,7 @@ jobs:
         run: |
           cd openwrt
           echo -e "$(nproc) thread compile"
+          # 第一次尝试多线程编译，如果报错则转为单线程排查 (V=s)
           make -j$(nproc) || make -j1 V=s
           echo "status=success" >> $GITHUB_OUTPUT
 
