@@ -18,10 +18,11 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+      # 1. 第一步：下载你的仓库代码 (configs, scripts 等)
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 使用手动清理代替 Maximize Build Space 插件，防止文件被抹除
+      # 2. 第二步：手动清理磁盘空间 (不使用任何会挂载分区的插件，防止文件失踪)
       - name: Cleanup Disk Space
         run: |
           sudo rm -rf /usr/share/dotnet
@@ -29,8 +30,10 @@ jobs:
           sudo rm -rf /opt/ghc
           sudo rm -rf "/usr/local/share/boost"
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          echo "清理完成，当前磁盘空间："
           df -h
 
+      # 3. 第三步：安装编译环境
       - name: Initialization environment
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -40,15 +43,13 @@ jobs:
           sudo -E apt-get -qq autoremove --purge
           sudo -E apt-get -qq clean
           sudo timedatectl set-timezone "$TZ"
-          sudo mkdir -p /workdir
-          sudo chown $USER:$USER /workdir
 
+      # 4. 第四步：克隆 OpenWrt 源码到名为 'openwrt' 的子文件夹
       - name: Clone source code
-        working-directory: /workdir
         run: |
           git clone $REPO_URL -b $REPO_BRANCH openwrt
-          ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
+      # 5. 第五步：加载自定义插件源
       - name: Load custom feeds
         run: |
           if [ -f "$FEEDS_CONF" ]; then
@@ -65,25 +66,29 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+      # 6. 第六步：加载配置 (在这里我们会再次检查文件)
       - name: Load custom configuration
         run: |
-          # 检查配置文件
+          echo "正在检查当前目录：$(pwd)"
+          ls -F
+          
           if [ ! -f "$CONFIG_FILE" ]; then
-            echo "错误: 找不到配置文件 $CONFIG_FILE"
-            echo "当前目录结构如下："
-            ls -R
+            echo "错误: 依旧找不到配置文件 $CONFIG_FILE"
+            echo "全目录扫描 (Debug):"
+            find . -maxdepth 2
             exit 1
           fi
           
+          # 将你的 .config 复制到源码目录
           cp "$CONFIG_FILE" openwrt/.config
           
-          # 强制增加分区大小防止空间不足
+          # 强制增加分区大小设置，防止最后生成固件时空间不足
           echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> openwrt/.config
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> openwrt/.config
           
           cd openwrt
           make defconfig
-          echo "--- 检查编译目标 ---"
+          echo "--- 确认目标平台 ---"
           grep "CONFIG_TARGET" .config | head -n 5
           
           if [ -f "../$DIY_P2_SH" ]; then
@@ -94,6 +99,7 @@ jobs:
       - name: Download package
         run: |
           cd openwrt
+          # 下载所有需要的源码，使用多线程加速
           make download -j8
           find dl -size -1024c -exec rm -f {} \;
 
@@ -102,6 +108,7 @@ jobs:
         run: |
           cd openwrt
           echo -e "$(nproc) thread compile"
+          # 第一次尝试多线程编译
           make -j$(nproc) || make -j1 V=s
           echo "status=success" >> $GITHUB_OUTPUT
 
