@@ -11,9 +11,6 @@ env:
   CONFIG_FILE: configs/qihoo_v6_gold.config
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
-  UPLOAD_BIN_DIR: false
-  UPLOAD_FIRMWARE: true
-  UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
 
 jobs:
@@ -21,18 +18,22 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+      # 1. 先下载你的代码
       - name: Checkout
-        uses: actions/checkout@main
+        uses: actions/checkout@v4
 
-      - name: Maximize Build Space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 2048
-          swap-size-mb: 1
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
+      # 2. 【核心修复】手动清理空间，不使用任何可能抹除文件的插件
+      - name: Cleanup Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          echo "磁盘清理完成，当前可用空间："
+          df -h
 
+      # 3. 初始化环境
       - name: Initialization environment
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -42,28 +43,17 @@ jobs:
           sudo -E apt-get -qq autoremove --purge
           sudo -E apt-get -qq clean
           sudo timedatectl set-timezone "$TZ"
-          sudo mkdir -p /workdir
-          sudo chown $USER:$USER /workdir
 
+      # 4. 克隆 OpenWrt 源码
       - name: Clone source code
-        working-directory: /workdir
         run: |
           git clone $REPO_URL -b $REPO_BRANCH openwrt
-          ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
+      # 5. 加载 Feeds
       - name: Load custom feeds
         run: |
-          # 使用 if 语句，即使文件缺失也不会报错退出
-          if [ -f "$FEEDS_CONF" ]; then
-            cp "$FEEDS_CONF" openwrt/feeds.conf.default
-            echo "成功加载自定义 feeds 配置。"
-          fi
-          
-          if [ -f "$DIY_P1_SH" ]; then
-            chmod +x "$DIY_P1_SH"
-            ./"$DIY_P1_SH"
-            echo "成功执行 DIY-Part1 脚本。"
-          fi
+          [ -f "$FEEDS_CONF" ] && cp "$FEEDS_CONF" openwrt/feeds.conf.default
+          [ -f "$DIY_P1_SH" ] && chmod +x "$DIY_P1_SH" && ./"$DIY_P1_SH"
 
       - name: Update & Install feeds
         run: |
@@ -71,11 +61,12 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+      # 6. 加载配置 (这次绝对能找到了)
       - name: Load custom configuration
         run: |
-          # 检查配置文件路径
+          # 检查配置文件
           if [ ! -f "$CONFIG_FILE" ]; then
-            echo "错误: 找不到配置文件 $CONFIG_FILE"
+            echo "错误: 依旧找不到配置文件 $CONFIG_FILE"
             echo "当前目录结构如下："
             ls -R
             exit 1
@@ -83,13 +74,13 @@ jobs:
           
           cp "$CONFIG_FILE" openwrt/.config
           
-          # 强制增加分区大小，彻底解决之前的 "out of space" 报错
+          # 强制增加分区大小防止空间不足
           echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> openwrt/.config
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> openwrt/.config
           
           cd openwrt
           make defconfig
-          echo "--- 检查编译目标是否正确 ---"
+          echo "--- 检查编译目标 ---"
           grep "CONFIG_TARGET" .config | head -n 5
           
           if [ -f "../$DIY_P2_SH" ]; then
@@ -98,11 +89,9 @@ jobs:
           fi
 
       - name: Download package
-        id: package
         run: |
           cd openwrt
           make download -j8
-          find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
 
       - name: Compile the firmware
@@ -110,7 +99,6 @@ jobs:
         run: |
           cd openwrt
           echo -e "$(nproc) thread compile"
-          # 第一次尝试多线程编译，如果报错则转为单线程排查 (V=s)
           make -j$(nproc) || make -j1 V=s
           echo "status=success" >> $GITHUB_OUTPUT
 
@@ -123,8 +111,8 @@ jobs:
           echo "FIRMWARE=$PWD" >> $GITHUB_ENV
           echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: Upload firmware directory
-        uses: actions/upload-artifact@main
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
         if: steps.organize.outputs.status == 'success' && !cancelled()
         with:
           name: OpenWrt_360V6_2305
