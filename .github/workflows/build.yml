@@ -6,6 +6,7 @@ on:
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
+  # ImmortalWrt 的 25.12 开发源码目前就在 master 分支
   REPO_BRANCH: master
   FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: configs/qihoo_v6_gold.config
@@ -55,11 +56,10 @@ jobs:
       - name: Update & Install feeds
         run: |
           cd openwrt
-          rm -rf feeds/
           ./scripts/feeds update -a
-          # 连续安装两次，确保所有交叉依赖（如 jq/host）能被正确建立索引
           ./scripts/feeds install -a
-          ./scripts/feeds install -a
+          # 【切除病灶】移除由于 jq/host 缺失导致 defconfig 报错回滚的插件
+          rm -rf package/feeds/luci/luci-app-advanced-reboot
 
       - name: Load custom configuration
         run: |
@@ -69,36 +69,38 @@ jobs:
           fi
 
           sed -i 's/\r$//' "$CONFIG_FILE"
+          
           cd openwrt
           
-          # 1. 核心修复：强制注入并锁定架构选择
-          # 使用 >> 分开注入，确保架构选择在最前面
-          echo "CONFIG_TARGET_qualcommax=y" > .config
-          echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> .config
-          echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" >> .config
-          
-          # 2. 合并你的详细配置
+          # 1. 强制写入我们在源码里看到的“真名” qihoo_360v6
+          cat > .config <<EOF
+CONFIG_TARGET_qualcommax=y
+CONFIG_TARGET_qualcommax_ipq60xx=y
+CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y
+EOF
+
+          # 2. 合并详细插件配置
           cat "../$CONFIG_FILE" >> .config
           
           # 3. 补充分区参数
           echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> .config
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
           
-          # 4. 关键：先执行一次 defconfig，如果被重置，再强制写回
+          # 4. 执行补全
           make defconfig
-          if ! grep -q "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" .config; then
-             echo "检测到架构被自动重置，正在执行二次强行锁定..."
-             echo "CONFIG_TARGET_qualcommax=y" >> .config
-             echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> .config
-             echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" >> .config
-             # 这种情况下使用 oldconfig 往往比 defconfig 更能保住我们的选择
-             make oldconfig
-          fi
           
-          echo "--- 正在最终验证锁定状态 ---"
+          # 5. 【二次锁定】如果被自动重置，强行写回
+          if ! grep -q "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" .config; then
+            echo "警告: 架构被重置，正在执行二次强行注入..."
+            echo "CONFIG_TARGET_qualcommax=y" >> .config
+            echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> .config
+            echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" >> .config
+            make oldconfig
+          fi
+
+          echo "--- 正在最终验证 ---"
           if ! grep -q "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" .config; then
             echo "致命错误: 360V6 锁定失败！"
-            # 打印当前实际选中的目标，看看它变成了什么
             grep "CONFIG_TARGET_.*=y" .config
             exit 1
           fi
@@ -127,5 +129,5 @@ jobs:
         uses: actions/upload-artifact@v4
         if: steps.compile.outputs.status == 'success'
         with:
-          name: OpenWrt_360V6_Final_25.12
+          name: OpenWrt_360V6_Final
           path: openwrt/bin/targets/*/*
