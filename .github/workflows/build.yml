@@ -6,7 +6,6 @@ on:
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  # 【核心修改】这里必须是 24.10，因为只有这个版本才有 qualcommax 文件夹
   REPO_BRANCH: openwrt-24.10
   FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: configs/qihoo_v6_gold.config
@@ -22,7 +21,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 1. 磁盘清理 (手动模式，稳健不丢文件)
       - name: Cleanup Disk Space
         run: |
           sudo rm -rf /usr/share/dotnet
@@ -32,7 +30,6 @@ jobs:
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
           df -h
 
-      # 2. 环境初始化
       - name: Initialization environment
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -43,12 +40,10 @@ jobs:
           sudo -E apt-get -qq clean
           sudo timedatectl set-timezone "$TZ"
 
-      # 3. 克隆源码
       - name: Clone source code
         run: |
           git clone $REPO_URL -b $REPO_BRANCH openwrt
 
-      # 4. 加载自定义 Feeds (Nikki)
       - name: Load custom feeds
         run: |
           [ -f "$FEEDS_CONF" ] && cp "$FEEDS_CONF" openwrt/feeds.conf.default
@@ -63,7 +58,6 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # 5. 加载配置与架构锁定 (24.10 专用逻辑)
       - name: Load custom configuration
         run: |
           if [ ! -f "$CONFIG_FILE" ]; then
@@ -73,36 +67,43 @@ jobs:
 
           sed -i 's/\r$//' "$CONFIG_FILE"
           
-          # 【重点】强制写入 24.10 下 360V6 的正确架构名 (qualcommax)
-          echo "CONFIG_TARGET_qualcommax=y" > openwrt/.config
-          echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> openwrt/.config
-          echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_v6=y" >> openwrt/.config
-          
-          cd openwrt
-          make defconfig
+          # 【核心修正】强制锁定 360V6 身份，并利用脚本剔除其他所有设备
+          {
+            echo "CONFIG_TARGET_qualcommax=y"
+            echo "CONFIG_TARGET_qualcommax_ipq60xx=y"
+            echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_v6=y"
+            # 关键：关闭多设备支持和所有设备构建
+            echo "CONFIG_TARGET_MULTI_PROFILE=n"
+            echo "CONFIG_ALL_DEVICES=n"
+            echo "CONFIG_TARGET_PER_DEVICE_ROOTFS=y"
+          } > openwrt/.config
           
           # 追加你的详细插件配置
-          cd ..
           cat "$CONFIG_FILE" >> openwrt/.config
           
-          # 强制扩容分区
+          # 强制注入分区参数
           echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> openwrt/.config
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> openwrt/.config
           
           cd openwrt
           make defconfig
           
-          # 【熔断校验】
-          echo "--- 正在验证目标架构 ---"
-          # 在 24.10 中，如果 qualcommax 没被选中，说明彻底失败
-          if ! grep -q "CONFIG_TARGET_qualcommax=y" .config; then
-            echo "致命错误: 架构锁定失败！请确认源码分支是否为 openwrt-24.10"
-            grep "CONFIG_TARGET" .config | head -n 15
-            echo "--- 源码目录检查 ---"
-            ls -d target/linux/qualcommax || echo "qualcommax 目录不存在！"
+          # 【二次强力清洗】利用 sed 关掉所有非 qihoo_v6 的设备项
+          # 这一步能彻底解决出货变成 8devices 的问题
+          sed -i 's/CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_.*=y/# & is not set/g' .config
+          sed -i 's/# CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_v6 is not set/CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_v6=y/g' .config
+          
+          # 再次补全
+          make defconfig
+          
+          # 校验逻辑
+          echo "--- 正在最终确认目标设备 ---"
+          if ! grep -q "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_v6=y" .config; then
+            echo "致命错误: 360V6 锁定失败！"
+            grep "CONFIG_TARGET_DEVICE" .config
             exit 1
           fi
-          echo "架构确认成功: qualcommax (24.10分支)。"
+          echo "目标确认: 360V6 已就绪。"
           
           if [ -f "../$DIY_P2_SH" ]; then
             chmod +x "../$DIY_P2_SH"
@@ -128,13 +129,15 @@ jobs:
         if: steps.compile.outputs.status == 'success' && !cancelled()
         run: |
           cd openwrt/bin/targets/*/*
+          # 删除所有不含 qihoo 字样的无关文件
           rm -rf packages
+          find . -type f ! -name "*qihoo*" -delete
           echo "FIRMWARE=$PWD" >> $GITHUB_ENV
           echo "status=success" >> $GITHUB_OUTPUT
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
-        if: steps.organize.outputs.status == 'success' && !cancelled()
+        if: steps.organize.outputs.status == 'success'
         with:
-          name: OpenWrt_360V6_24.10
+          name: OpenWrt_360V6_24.10_Final
           path: ${{ env.FIRMWARE }}
