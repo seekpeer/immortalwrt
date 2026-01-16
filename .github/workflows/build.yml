@@ -46,10 +46,7 @@ jobs:
 
       - name: Load custom feeds
         run: |
-          if [ -f "$FEEDS_CONF" ]; then
-            cp "$FEEDS_CONF" openwrt/feeds.conf.default
-          fi
-          
+          [ -f "$FEEDS_CONF" ] && cp "$FEEDS_CONF" openwrt/feeds.conf.default
           if [ -f "$DIY_P1_SH" ]; then
             chmod +x "$DIY_P1_SH"
             ./"$DIY_P1_SH"
@@ -58,13 +55,11 @@ jobs:
       - name: Update & Install feeds
         run: |
           cd openwrt
-          echo "==== 调试：检查 feeds.conf.default 最终内容 ===="
-          cat feeds.conf.default
-          
           rm -rf feeds/
-          # 尝试更新。如果失败，尝试忽略错误继续（因为有些非核心源可能临时不可用）
-          ./scripts/feeds update -a || echo "部分 Feeds 更新失败，尝试继续..."
-          ./scripts/feeds install -a || { echo "核心 Feeds 安装失败，编译终止"; exit 1; }
+          ./scripts/feeds update -a
+          # 连续安装两次，确保所有交叉依赖（如 jq/host）能被正确建立索引
+          ./scripts/feeds install -a
+          ./scripts/feeds install -a
 
       - name: Load custom configuration
         run: |
@@ -74,30 +69,37 @@ jobs:
           fi
 
           sed -i 's/\r$//' "$CONFIG_FILE"
-          
           cd openwrt
-          # 1. 强制注入 360V6 真名锁定
-          {
-            echo "CONFIG_TARGET_qualcommax=y"
-            echo "CONFIG_TARGET_qualcommax_ipq60xx=y"
-            echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y"
-          } > .config
           
-          # 2. 合并详细配置
+          # 1. 核心修复：强制注入并锁定架构选择
+          # 使用 >> 分开注入，确保架构选择在最前面
+          echo "CONFIG_TARGET_qualcommax=y" > .config
+          echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> .config
+          echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" >> .config
+          
+          # 2. 合并你的详细配置
           cat "../$CONFIG_FILE" >> .config
           
-          # 3. 强制分区参数
+          # 3. 补充分区参数
           echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> .config
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
           
-          # 4. 执行配置补全
+          # 4. 关键：先执行一次 defconfig，如果被重置，再强制写回
           make defconfig
+          if ! grep -q "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" .config; then
+             echo "检测到架构被自动重置，正在执行二次强行锁定..."
+             echo "CONFIG_TARGET_qualcommax=y" >> .config
+             echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> .config
+             echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" >> .config
+             # 这种情况下使用 oldconfig 往往比 defconfig 更能保住我们的选择
+             make oldconfig
+          fi
           
-          # 5. 校验锁定状态
-          echo "--- 正在验证架构锁定状态 ---"
+          echo "--- 正在最终验证锁定状态 ---"
           if ! grep -q "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" .config; then
             echo "致命错误: 360V6 锁定失败！"
-            grep "CONFIG_TARGET" .config | head -n 15
+            # 打印当前实际选中的目标，看看它变成了什么
+            grep "CONFIG_TARGET_.*=y" .config
             exit 1
           fi
           echo "架构确认成功: 已锁定为 qihoo_360v6。"
@@ -125,5 +127,5 @@ jobs:
         uses: actions/upload-artifact@v4
         if: steps.compile.outputs.status == 'success'
         with:
-          name: OpenWrt_360V6_25.12_Final
+          name: OpenWrt_360V6_Final_25.12
           path: openwrt/bin/targets/*/*
