@@ -65,37 +65,38 @@ jobs:
             exit 1
           fi
 
-          # 1. 预清洗：去除可能导致脚本识别错误的 Windows 换行符
+          # 1. 深度清洗配置文件
           sed -i 's/\r$//' "$CONFIG_FILE"
           
-          # 2. 【第一阶段：锁定骨架】
-          # 强制写入最简核心配置，并执行第一次 make defconfig
-          echo "CONFIG_TARGET_qualcommax=y" > openwrt/.config
-          echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> openwrt/.config
-          echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_v6=y" >> openwrt/.config
+          # 2. [核心改进] 强制注入并锁定：不再依赖两次 defconfig，而是直接一次性强制写入
+          # 明确指定所有必需的目标参数，防止 Kconfig 产生歧义
+          {
+            echo "CONFIG_TARGET_qualcommax=y"
+            echo "CONFIG_TARGET_qualcommax_ipq60xx=y"
+            echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_v6=y"
+            echo "CONFIG_TARGET_BOARD=\"qualcommax\""
+            echo "CONFIG_TARGET_SUBTARGET=\"ipq60xx\""
+          } > openwrt/.config
           
-          cd openwrt
-          make defconfig
-          
-          # 3. 【第二阶段：追加详情】
-          # 将用户的详细插件配置合并到已锁定的 .config 中
-          cd ..
+          # 3. 追加详细配置
           cat "$CONFIG_FILE" >> openwrt/.config
           
-          # 强制注入分区参数，防止生成固件时空间不足
+          # 4. 强制注入分区大小
           echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> openwrt/.config
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> openwrt/.config
           
           cd openwrt
-          # 执行第二次补全，解决插件依赖
-          make defconfig
+          # 使用 oldconfig 而非 defconfig，这会强制保留用户在 .config 中已经定义的目标
+          make oldconfig || make defconfig
           
-          # 4. 【熔断校验】
+          # 5. [熔断校验]
           echo "--- 正在验证最终目标架构 ---"
           if ! grep -q "CONFIG_TARGET_qualcommax=y" .config; then
-            echo "致命错误: 二段锁定依然失败，架构被强行重置！"
-            echo "配置快照 (前 15 行):"
-            grep "CONFIG_TARGET" .config | head -n 15
+            echo "致命错误: 架构锁定失败！系统仍然退回了默认架构。"
+            echo "--- 正在尝试自动定位源码中的 360V6 正确代号 ---"
+            find target/linux/qualcommax -name "*.mk" | xargs grep -i "qihoo" || echo "未在源码中找到 qihoo 相关设备"
+            echo "--- 配置快照 (前 15 行) ---"
+            head -n 15 .config
             exit 1
           fi
           echo "架构确认成功: 已锁定为 360V6 (qualcommax)。"
@@ -119,18 +120,9 @@ jobs:
           make -j$(nproc) || make -j1 V=s
           echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: Organize files
-        id: organize
-        if: steps.compile.outputs.status == 'success' && !cancelled()
-        run: |
-          cd openwrt/bin/targets/*/*
-          rm -rf packages
-          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-          echo "status=success" >> $GITHUB_OUTPUT
-
       - name: Upload firmware
         uses: actions/upload-artifact@v4
-        if: steps.organize.outputs.status == 'success' && !cancelled()
+        if: steps.compile.outputs.status == 'success'
         with:
           name: OpenWrt_360V6_2305
-          path: ${{ env.FIRMWARE }}
+          path: openwrt/bin/targets/*/*
