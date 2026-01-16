@@ -65,11 +65,11 @@ jobs:
             exit 1
           fi
 
-          # 1. 清洗文件格式
+          # 1. 预清洗：去除可能导致脚本识别错误的 Windows 换行符
           sed -i 's/\r$//' "$CONFIG_FILE"
           
-          # 2. [关键] 第一阶段：强制锁定 360V6 核心目标
-          # 这一步是为了防止 make defconfig 迷路
+          # 2. 【第一阶段：锁定骨架】
+          # 强制写入最简核心配置，并执行第一次 make defconfig
           echo "CONFIG_TARGET_qualcommax=y" > openwrt/.config
           echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> openwrt/.config
           echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_v6=y" >> openwrt/.config
@@ -77,23 +77,24 @@ jobs:
           cd openwrt
           make defconfig
           
-          # 3. [关键] 第二阶段：追加用户自定义的详细配置（插件等）
+          # 3. 【第二阶段：追加详情】
+          # 将用户的详细插件配置合并到已锁定的 .config 中
           cd ..
           cat "$CONFIG_FILE" >> openwrt/.config
           
-          # 注入分区参数
+          # 强制注入分区参数，防止生成固件时空间不足
           echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> openwrt/.config
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> openwrt/.config
           
           cd openwrt
-          # 再次执行补全，解决插件依赖
+          # 执行第二次补全，解决插件依赖
           make defconfig
           
-          # 4. 熔断校验
-          echo "--- 正在验证目标架构 ---"
+          # 4. 【熔断校验】
+          echo "--- 正在验证最终目标架构 ---"
           if ! grep -q "CONFIG_TARGET_qualcommax=y" .config; then
-            echo "致命错误: 架构锁定失败！系统仍然退回了默认架构。"
-            echo "当前目标快照 (前 15 行):"
+            echo "致命错误: 二段锁定依然失败，架构被强行重置！"
+            echo "配置快照 (前 15 行):"
             grep "CONFIG_TARGET" .config | head -n 15
             exit 1
           fi
@@ -118,9 +119,18 @@ jobs:
           make -j$(nproc) || make -j1 V=s
           echo "status=success" >> $GITHUB_OUTPUT
 
+      - name: Organize files
+        id: organize
+        if: steps.compile.outputs.status == 'success' && !cancelled()
+        run: |
+          cd openwrt/bin/targets/*/*
+          rm -rf packages
+          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+          echo "status=success" >> $GITHUB_OUTPUT
+
       - name: Upload firmware
         uses: actions/upload-artifact@v4
-        if: steps.compile.outputs.status == 'success'
+        if: steps.organize.outputs.status == 'success' && !cancelled()
         with:
           name: OpenWrt_360V6_2305
-          path: openwrt/bin/targets/*/*
+          path: ${{ env.FIRMWARE }}
