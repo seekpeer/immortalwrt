@@ -73,11 +73,10 @@ jobs:
           cd openwrt
           
           # 1. 强制写入我们在源码里看到的“真名” qihoo_360v6
-          cat > .config <<EOF
-CONFIG_TARGET_qualcommax=y
-CONFIG_TARGET_qualcommax_ipq60xx=y
-CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y
-EOF
+          # 修复 YAML 缩进错误：改用 echo 逐行注入，确保语法绝对安全
+          echo "CONFIG_TARGET_qualcommax=y" > .config
+          echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> .config
+          echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" >> .config
 
           # 2. 合并详细插件配置
           cat "../$CONFIG_FILE" >> .config
