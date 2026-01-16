@@ -6,7 +6,6 @@ on:
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  # 25.12 源码目前在 master 分支
   REPO_BRANCH: master
   FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: configs/qihoo_v6_gold.config
@@ -47,7 +46,6 @@ jobs:
 
       - name: Load custom feeds
         run: |
-          # 确保 feeds.conf.default 已经同步到 master 分支根目录
           if [ -f "$FEEDS_CONF" ]; then
             cp "$FEEDS_CONF" openwrt/feeds.conf.default
           fi
@@ -60,15 +58,13 @@ jobs:
       - name: Update & Install feeds
         run: |
           cd openwrt
-          # 调试：强制打印当前使用的 Feeds 配置文件内容，检查是否有乱码或错误链接
-          echo "==== 调试：feeds.conf.default 内容如下 ===="
+          echo "==== 调试：检查 feeds.conf.default 最终内容 ===="
           cat feeds.conf.default
-          echo "=========================================="
           
-          # 强制删除可能存在的残留目录并执行更新
           rm -rf feeds/
-          ./scripts/feeds update -a || { echo "Feeds 更新失败，请检查 URL"; exit 1; }
-          ./scripts/feeds install -a || { echo "Feeds 安装失败"; exit 1; }
+          # 尝试更新。如果失败，尝试忽略错误继续（因为有些非核心源可能临时不可用）
+          ./scripts/feeds update -a || echo "部分 Feeds 更新失败，尝试继续..."
+          ./scripts/feeds install -a || { echo "核心 Feeds 安装失败，编译终止"; exit 1; }
 
       - name: Load custom configuration
         run: |
@@ -80,7 +76,7 @@ jobs:
           sed -i 's/\r$//' "$CONFIG_FILE"
           
           cd openwrt
-          # 1. 种子注入锁定 360V6 (25.12 真名)
+          # 1. 强制注入 360V6 真名锁定
           {
             echo "CONFIG_TARGET_qualcommax=y"
             echo "CONFIG_TARGET_qualcommax_ipq60xx=y"
@@ -90,18 +86,18 @@ jobs:
           # 2. 合并详细配置
           cat "../$CONFIG_FILE" >> .config
           
-          # 3. 补充分区与核心参数
+          # 3. 强制分区参数
           echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> .config
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
           
-          # 4. 补全配置
+          # 4. 执行配置补全
           make defconfig
           
           # 5. 校验锁定状态
           echo "--- 正在验证架构锁定状态 ---"
           if ! grep -q "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" .config; then
             echo "致命错误: 360V6 锁定失败！"
-            grep "CONFIG_TARGET" .config | head -n 20
+            grep "CONFIG_TARGET" .config | head -n 15
             exit 1
           fi
           echo "架构确认成功: 已锁定为 qihoo_360v6。"
