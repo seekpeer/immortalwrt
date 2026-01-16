@@ -6,7 +6,7 @@ on:
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  # ImmortalWrt 的 25.12 开发源码目前就在 master 分支
+  #  ImmortalWrt 的 25.12 开发源码目前就在 master 分支
   REPO_BRANCH: master
   FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: configs/qihoo_v6_gold.config
