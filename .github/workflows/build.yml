@@ -6,7 +6,7 @@ on:
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  # 【特别注意】如果 openwrt-25.12 报错找不到目录，请尝试改为 master
+  # 使用你确认过源码的 25.12 分支
   REPO_BRANCH: openwrt-25.12
   FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: configs/qihoo_v6_gold.config
@@ -43,11 +43,8 @@ jobs:
 
       - name: Clone source code
         run: |
-          # 增加目录存在性检查，防止后续报错
-          git clone $REPO_URL -b $REPO_BRANCH openwrt || {
-            echo "错误: 无法克隆分支 $REPO_BRANCH，请确认该分支名是否正确！"
-            exit 1
-          }
+          # 25.12 如果克隆失败，脚本会报错并停止，防止后续路径错误
+          git clone $REPO_URL -b $REPO_BRANCH openwrt || exit 1
 
       - name: Load custom feeds
         run: |
@@ -72,10 +69,9 @@ jobs:
 
           sed -i 's/\r$//' "$CONFIG_FILE"
           
-          # 进入目录确保路径正确
           cd openwrt
           
-          # 【精准锁定】使用你在 25.12 源码中发现的真名
+          # 【精准注入】完全对齐你发现的源码定义
           {
             echo "CONFIG_TARGET_qualcommax=y"
             echo "CONFIG_TARGET_qualcommax_ipq60xx=y"
@@ -84,21 +80,21 @@ jobs:
             echo "CONFIG_TARGET_SUBTARGET=\"ipq60xx\""
           } > .config
           
-          # 合并你的插件配置
+          # 合并详细插件配置
           cat "../$CONFIG_FILE" >> .config
           
-          # 强制补充分区参数
+          # 强制分区参数，适配 25.12 结构
           echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> .config
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
           
           # 执行配置补全
           make defconfig
           
-          # 校验是否成功选中了 360v6
-          echo "--- 正在验证目标锁定状态 ---"
+          # 核心校验：确保 qihoo_360v6 这一行被正确解析
+          echo "--- 正在验证 25.12 目标锁定状态 ---"
           if ! grep -q "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" .config; then
-            echo "致命错误: 架构锁定失败！源码中可能不存在该 ID。"
-            grep "CONFIG_TARGET" .config | head -n 15
+            echo "致命错误: 设备锁定失败！请检查源码中是否真的存在该 ID。"
+            grep "CONFIG_TARGET" .config | head -n 20
             exit 1
           fi
           echo "架构确认成功: 已锁定为 360V6 (qihoo_360v6)。"
