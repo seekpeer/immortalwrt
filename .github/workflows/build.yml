@@ -6,7 +6,7 @@ on:
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  # 【核心修改】指向包含 360V6 真名定义的最新分支
+  # 【特别注意】如果 openwrt-25.12 报错找不到目录，请尝试改为 master
   REPO_BRANCH: openwrt-25.12
   FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: configs/qihoo_v6_gold.config
@@ -43,7 +43,11 @@ jobs:
 
       - name: Clone source code
         run: |
-          git clone $REPO_URL -b $REPO_BRANCH openwrt
+          # 增加目录存在性检查，防止后续报错
+          git clone $REPO_URL -b $REPO_BRANCH openwrt || {
+            echo "错误: 无法克隆分支 $REPO_BRANCH，请确认该分支名是否正确！"
+            exit 1
+          }
 
       - name: Load custom feeds
         run: |
@@ -66,35 +70,34 @@ jobs:
             exit 1
           fi
 
-          # 1. 清洗文件格式，防止换行符导致报错
           sed -i 's/\r$//' "$CONFIG_FILE"
           
-          # 2. 【核心锁定】使用 25.12 源码中的真名 qihoo_360v6 进行种子注入
+          # 进入目录确保路径正确
+          cd openwrt
+          
+          # 【精准锁定】使用你在 25.12 源码中发现的真名
           {
             echo "CONFIG_TARGET_qualcommax=y"
             echo "CONFIG_TARGET_qualcommax_ipq60xx=y"
             echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y"
             echo "CONFIG_TARGET_BOARD=\"qualcommax\""
             echo "CONFIG_TARGET_SUBTARGET=\"ipq60xx\""
-          } > openwrt/.config
+          } > .config
           
-          # 3. 合并用户的详细插件配置
-          cd ..
-          cat "$CONFIG_FILE" >> openwrt/.config
+          # 合并你的插件配置
+          cat "../$CONFIG_FILE" >> .config
           
-          # 4. 强制注入分区参数，确保 512MB 空间
-          echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> openwrt/.config
-          echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> openwrt/.config
+          # 强制补充分区参数
+          echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> .config
+          echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
           
-          cd openwrt
-          # 5. 执行配置补全
+          # 执行配置补全
           make defconfig
           
-          # 6. 【熔断校验】
-          echo "--- 正在验证 25.12 目标架构锁定状态 ---"
+          # 校验是否成功选中了 360v6
+          echo "--- 正在验证目标锁定状态 ---"
           if ! grep -q "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" .config; then
-            echo "致命错误: 架构锁定失败！系统可能再次退回了默认架构。"
-            echo "配置快照 (Debug):"
+            echo "致命错误: 架构锁定失败！源码中可能不存在该 ID。"
             grep "CONFIG_TARGET" .config | head -n 15
             exit 1
           fi
@@ -116,22 +119,12 @@ jobs:
         run: |
           cd openwrt
           echo -e "$(nproc) thread compile"
-          # 优先尝试多线程编译
           make -j$(nproc) || make -j1 V=s
-          echo "status=success" >> $GITHUB_OUTPUT
-
-      - name: Organize files
-        id: organize
-        if: steps.compile.outputs.status == 'success' && !cancelled()
-        run: |
-          cd openwrt/bin/targets/*/*
-          rm -rf packages
-          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
           echo "status=success" >> $GITHUB_OUTPUT
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
-        if: steps.organize.outputs.status == 'success' && !cancelled()
+        if: steps.compile.outputs.status == 'success'
         with:
           name: OpenWrt_360V6_25.12_Final
-          path: ${{ env.FIRMWARE }}
+          path: openwrt/bin/targets/*/*
