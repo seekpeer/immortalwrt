@@ -65,28 +65,31 @@ jobs:
             exit 1
           fi
           
-          # 1. 先清空并强制注入目标种子配置
+          # 1. 清洗配置文件：去除 Windows 换行符
+          sed -i 's/\r$//' "$CONFIG_FILE"
+          
+          # 2. 构造“种子”配置，强制锁定目标，防止 make defconfig 迷路
           echo "CONFIG_TARGET_qualcommax=y" > openwrt/.config
           echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> openwrt/.config
           echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_v6=y" >> openwrt/.config
           
-          # 2. 合并你的详细配置
+          # 3. 合并用户的详细配置
           cat "$CONFIG_FILE" >> openwrt/.config
           
-          # 3. 注入分区扩容
+          # 4. 补充分区参数
           echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> openwrt/.config
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> openwrt/.config
           
           cd openwrt
-          # 4. 关键：先执行一轮默认配置补全
+          # 5. 执行配置补全
           make defconfig
           
-          # 5. 【熔断校验】
+          # 6. 【核心校验】如果不是 qualcommax，直接报错熔断
           echo "--- 正在验证目标架构 ---"
           if ! grep -q "CONFIG_TARGET_qualcommax=y" .config; then
             echo "致命错误: 架构锁定失败！系统仍然退回了默认架构。"
-            echo "配置快照："
-            grep "CONFIG_TARGET" .config | head -n 15
+            echo "当前目标快照:"
+            grep "CONFIG_TARGET" .config | head -n 10
             exit 1
           fi
           echo "架构确认成功: 已锁定为 360V6 (qualcommax)。"
@@ -106,6 +109,7 @@ jobs:
         id: compile
         run: |
           cd openwrt
+          echo -e "$(nproc) thread compile"
           make -j$(nproc) || make -j1 V=s
           echo "status=success" >> $GITHUB_OUTPUT
 
