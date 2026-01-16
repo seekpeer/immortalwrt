@@ -6,7 +6,7 @@ on:
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  # ImmortalWrt 的 25.12 开发源码目前就在 master 分支
+  # 25.12 源码目前在 master 分支
   REPO_BRANCH: master
   FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: configs/qihoo_v6_gold.config
@@ -43,12 +43,15 @@ jobs:
 
       - name: Clone source code
         run: |
-          # 克隆官方源码，若失败则报错停止
           git clone $REPO_URL -b $REPO_BRANCH openwrt || exit 1
 
       - name: Load custom feeds
         run: |
-          [ -f "$FEEDS_CONF" ] && cp "$FEEDS_CONF" openwrt/feeds.conf.default
+          # 确保 feeds.conf.default 已经同步到 master 分支根目录
+          if [ -f "$FEEDS_CONF" ]; then
+            cp "$FEEDS_CONF" openwrt/feeds.conf.default
+          fi
+          
           if [ -f "$DIY_P1_SH" ]; then
             chmod +x "$DIY_P1_SH"
             ./"$DIY_P1_SH"
@@ -57,44 +60,48 @@ jobs:
       - name: Update & Install feeds
         run: |
           cd openwrt
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          # 调试：强制打印当前使用的 Feeds 配置文件内容，检查是否有乱码或错误链接
+          echo "==== 调试：feeds.conf.default 内容如下 ===="
+          cat feeds.conf.default
+          echo "=========================================="
+          
+          # 强制删除可能存在的残留目录并执行更新
+          rm -rf feeds/
+          ./scripts/feeds update -a || { echo "Feeds 更新失败，请检查 URL"; exit 1; }
+          ./scripts/feeds install -a || { echo "Feeds 安装失败"; exit 1; }
 
       - name: Load custom configuration
         run: |
-          # 检查配置文件是否存在于您的仓库中
           if [ ! -f "$CONFIG_FILE" ]; then
-            echo "错误: 在您的仓库中找不到 $CONFIG_FILE"
+            echo "错误: 找不到配置文件 $CONFIG_FILE"
             exit 1
           fi
 
-          # 预处理配置文件，防止 Windows 换行符干扰
           sed -i 's/\r$//' "$CONFIG_FILE"
           
-          # 进入 openwrt 目录执行 .config 生成操作
           cd openwrt
+          # 1. 种子注入锁定 360V6 (25.12 真名)
+          {
+            echo "CONFIG_TARGET_qualcommax=y"
+            echo "CONFIG_TARGET_qualcommax_ipq60xx=y"
+            echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y"
+          } > .config
           
-          # 1. 强制写入真名锁定 (基于您在源码中确认的 ID)
-          echo "CONFIG_TARGET_qualcommax=y" > .config
-          echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> .config
-          echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" >> .config
-          
-          # 2. 合并您的自定义插件配置
+          # 2. 合并详细配置
           cat "../$CONFIG_FILE" >> .config
           
-          # 3. 强制注入分区参数 (64MB Kernel + 512MB Rootfs)
+          # 3. 补充分区与核心参数
           echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> .config
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
           
-          # 4. 执行配置补全
+          # 4. 补全配置
           make defconfig
           
-          # 5. 架构锁定验证逻辑
-          echo "--- 正在最终确认架构锁定状态 ---"
+          # 5. 校验锁定状态
+          echo "--- 正在验证架构锁定状态 ---"
           if ! grep -q "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" .config; then
-            echo "致命错误: 360V6 锁定失败！Kconfig 未能识别该 ID。"
-            echo "已生成的配置快照 (前30行):"
-            head -n 30 .config
+            echo "致命错误: 360V6 锁定失败！"
+            grep "CONFIG_TARGET" .config | head -n 20
             exit 1
           fi
           echo "架构确认成功: 已锁定为 qihoo_360v6。"
@@ -122,5 +129,5 @@ jobs:
         uses: actions/upload-artifact@v4
         if: steps.compile.outputs.status == 'success'
         with:
-          name: OpenWrt_360V6_25.12_Master
+          name: OpenWrt_360V6_25.12_Final
           path: openwrt/bin/targets/*/*
