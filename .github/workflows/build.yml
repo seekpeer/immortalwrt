@@ -18,11 +18,9 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      # 1. 下载仓库代码
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. 手动清理空间 (不使用挂载插件，防止抹除文件)
       - name: Cleanup Disk Space
         run: |
           sudo rm -rf /usr/share/dotnet
@@ -30,10 +28,8 @@ jobs:
           sudo rm -rf /opt/ghc
           sudo rm -rf "/usr/local/share/boost"
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          echo "磁盘清理完成，当前可用空间："
           df -h
 
-      # 3. 初始化编译环境
       - name: Initialization environment
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -44,12 +40,10 @@ jobs:
           sudo -E apt-get -qq clean
           sudo timedatectl set-timezone "$TZ"
 
-      # 4. 克隆 OpenWrt 源码
       - name: Clone source code
         run: |
           git clone $REPO_URL -b $REPO_BRANCH openwrt
 
-      # 5. 加载自定义 Feeds 与 DIY 脚本 (Part 1)
       - name: Load custom feeds
         run: |
           [ -f "$FEEDS_CONF" ] && cp "$FEEDS_CONF" openwrt/feeds.conf.default
@@ -64,37 +58,39 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # 6. 加载配置并执行架构校验 (核心修复)
       - name: Load custom configuration
         run: |
-          # 检查配置文件是否存在
           if [ ! -f "$CONFIG_FILE" ]; then
             echo "错误: 找不到配置文件 $CONFIG_FILE"
-            ls -R
             exit 1
           fi
           
-          # 注入配置
-          cp "$CONFIG_FILE" openwrt/.config
+          # 1. 先清空并强制注入目标种子配置
+          echo "CONFIG_TARGET_qualcommax=y" > openwrt/.config
+          echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> openwrt/.config
+          echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_qihoo_v6=y" >> openwrt/.config
           
-          # 强制分区扩容 (512MB)
+          # 2. 合并你的详细配置
+          cat "$CONFIG_FILE" >> openwrt/.config
+          
+          # 3. 注入分区扩容
           echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> openwrt/.config
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> openwrt/.config
           
           cd openwrt
-          # 补全依赖项
+          # 4. 关键：先执行一轮默认配置补全
           make defconfig
           
-          # 【熔断校验】检查目标架构是否为 qualcommax
+          # 5. 【熔断校验】
           echo "--- 正在验证目标架构 ---"
           if ! grep -q "CONFIG_TARGET_qualcommax=y" .config; then
-            echo "致命错误: 目标架构识别异常 (退回到了 x86)，请检查配置文件内容！"
-            grep "CONFIG_TARGET" .config | head -n 10
+            echo "致命错误: 架构锁定失败！系统仍然退回了默认架构。"
+            echo "配置快照："
+            grep "CONFIG_TARGET" .config | head -n 15
             exit 1
           fi
-          echo "架构确认成功: 已锁定为 qualcommax (360V6)。"
+          echo "架构确认成功: 已锁定为 360V6 (qualcommax)。"
           
-          # 执行 DIY 脚本 (Part 2)
           if [ -f "../$DIY_P2_SH" ]; then
             chmod +x "../$DIY_P2_SH"
             "../$DIY_P2_SH"
@@ -110,23 +106,12 @@ jobs:
         id: compile
         run: |
           cd openwrt
-          echo -e "$(nproc) thread compile"
-          # 优先多线程，失败则单线程输出详细日志
           make -j$(nproc) || make -j1 V=s
-          echo "status=success" >> $GITHUB_OUTPUT
-
-      - name: Organize files
-        id: organize
-        if: steps.compile.outputs.status == 'success' && !cancelled()
-        run: |
-          cd openwrt/bin/targets/*/*
-          rm -rf packages
-          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
           echo "status=success" >> $GITHUB_OUTPUT
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
-        if: steps.organize.outputs.status == 'success' && !cancelled()
+        if: steps.compile.outputs.status == 'success'
         with:
           name: OpenWrt_360V6_2305
-          path: ${{ env.FIRMWARE }}
+          path: openwrt/bin/targets/*/*
